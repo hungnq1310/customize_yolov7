@@ -654,6 +654,7 @@ class Model(nn.Module):
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
+        print(self.model)
 
         # self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
@@ -894,7 +895,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
     # Error case -> first head may be not detect head, should be handled in the future
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head'][:-1]):  # from, number, module, args
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
         m = eval(m) if isinstance(m, str) else m  # eval strings
         for j, a in enumerate(args):
             try:
