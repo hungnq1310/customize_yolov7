@@ -101,30 +101,37 @@ class IDetect(nn.Module):
     include_nms = False
     concat = False
 
-    def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
+    def __init__(self, number_class=80, anchors=(), channels=()):  # detection layer
         super(IDetect, self).__init__()
-        self.nc = nc  # number of classes
-        self.no = nc + 5  # number of outputs per anchor
-        self.nl = len(anchors)  # number of detection layers
+        self.nc = number_class  # number of classes
+        self.num_output = number_class + 5  # per anchor (box) = number of classes + 4 (x, y, w, h) + 1 (objectness) 
+        self.num_detection_layer = len(anchors)  # number of detection layers (3 for config yolov7.yaml - layer 75, 88, 101)
         self.na = len(anchors[0]) // 2  # number of anchors
-        self.grid = [torch.zeros(1)] * self.nl  # init grid
-        a = torch.tensor(anchors).float().view(self.nl, -1, 2)
+        self.grid = [torch.zeros(1)] * self.num_detection_layer  # init grid
+
+        a = torch.tensor(anchors).float().view(self.num_detection_layer, -1, 2) # move number of detection layer to first index
         self.register_buffer('anchors', a)  # shape(nl,na,2)
-        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.register_buffer('anchor_grid', a.clone().view(self.num_detection_layer, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
+        self.m = nn.ModuleList(
+            nn.Conv2d(x, self.num_output * self.na, 1) for x in channels # anchors * [number of classes + 4 (x, y, w, h) + 1 (objectness)]
+        )  # output conv
         
-        self.ia = nn.ModuleList(ImplicitA(x) for x in ch)
-        self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch)
+        self.ia = nn.ModuleList(ImplicitA(x) for x in channels)
+        self.im = nn.ModuleList(ImplicitM(self.num_output * self.na) for _ in channels)
 
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
-        for i in range(self.nl):
-            x[i] = self.m[i](self.ia[i](x[i]))  # conv
-            x[i] = self.im[i](x[i])
+        for i in range(self.num_detection_layer):
+            x[i] = self.m[i](
+                self.ia[i](x[i]) # pass through ImplicitA
+            )  # conv
+            x[i] = self.im[i](
+                x[i] # pass through ImplicitM
+            ) 
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            x[i] = x[i].view(bs, self.na, self.num_output, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -133,7 +140,7 @@ class IDetect(nn.Module):
                 y = x[i].sigmoid()
                 y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
                 y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                z.append(y.view(bs, -1, self.no))
+                z.append(y.view(bs, -1, self.num_output))
 
         return x if self.training else (torch.cat(z, 1), x)
     
@@ -141,10 +148,12 @@ class IDetect(nn.Module):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
-        for i in range(self.nl):
-            x[i] = self.m[i](x[i])  # conv
+        for i in range(self.num_detection_layer):
+            x[i] = self.m[i](
+                x[i]
+            )  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            x[i] = x[i].view(bs, self.na, self.num_output, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -159,7 +168,7 @@ class IDetect(nn.Module):
                     xy = xy * (2. * self.stride[i]) + (self.stride[i] * (self.grid[i] - 0.5))  # new xy
                     wh = wh ** 2 * (4 * self.anchor_grid[i].data)  # new wh
                     y = torch.cat((xy, wh, conf), 4)
-                z.append(y.view(bs, -1, self.no))
+                z.append(y.view(bs, -1, self.num_output))
 
         if self.training:
             out = x
@@ -506,6 +515,7 @@ class IBin(nn.Module):
 
 
 class Model(nn.Module):
+    # TODO: change nc
     def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
@@ -764,7 +774,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             if c2 != no:  # if not output
                 c2 = make_divisible(c2 * gw, 8)
 
-            args = [c1, c2, *args[1:]]
+            args = [c1, c2, *args[1:]] # remove first elements
             if m in [DownC, SPPCSPC, GhostSPPCSPC, 
                      BottleneckCSPA, BottleneckCSPB, BottleneckCSPC, 
                      RepBottleneckCSPA, RepBottleneckCSPB, RepBottleneckCSPC, 
