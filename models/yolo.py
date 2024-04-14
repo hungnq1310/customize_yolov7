@@ -101,29 +101,29 @@ class IDetect(nn.Module):
     include_nms = False
     concat = False
 
-    def __init__(self, number_class=80, anchors=(), channels=()):  # detection layer
+    def __init__(self, nc=80, anchors=(), ch=()):  # detection layer
         super(IDetect, self).__init__()
-        self.nc = number_class  # number of classes
-        self.num_output = number_class + 5  # per anchor (box) = number of classes + 4 (x, y, w, h) + 1 (objectness) 
-        self.num_detection_layer = len(anchors)  # number of detection layers (3 for config yolov7.yaml - layer 75, 88, 101)
+        self.nc = nc  # number of classes
+        self.no = nc + 5  # per anchor (box) = number of classes + 4 (x, y, w, h) + 1 (objectness) 
+        self.nl = len(anchors)  # number of detection layers (3 for config yolov7.yaml - layer 75, 88, 101)
         self.na = len(anchors[0]) // 2  # number of anchors
-        self.grid = [torch.zeros(1)] * self.num_detection_layer  # init grid
+        self.grid = [torch.zeros(1)] * self.nl  # init grid
 
-        a = torch.tensor(anchors).float().view(self.num_detection_layer, -1, 2) # move number of detection layer to first index
+        a = torch.tensor(anchors).float().view(self.nl, -1, 2) # move number of detection layer to first index
         self.register_buffer('anchors', a)  # shape(nl,na,2)
-        self.register_buffer('anchor_grid', a.clone().view(self.num_detection_layer, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
+        self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
         self.m = nn.ModuleList(
-            nn.Conv2d(x, self.num_output * self.na, 1) for x in channels # anchors * [number of classes + 4 (x, y, w, h) + 1 (objectness)]
+            nn.Conv2d(x, self.no * self.na, 1) for x in ch # anchors * [number of classes + 4 (x, y, w, h) + 1 (objectness)]
         )  # output conv
         
-        self.ia = nn.ModuleList(ImplicitA(x) for x in channels)
-        self.im = nn.ModuleList(ImplicitM(self.num_output * self.na) for _ in channels)
+        self.ia = nn.ModuleList(ImplicitA(channel=c) for c in ch)
+        self.im = nn.ModuleList(ImplicitM(self.no * self.na) for _ in ch)
 
     def forward(self, x):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
-        for i in range(self.num_detection_layer):
+        for i in range(self.nl):
             x[i] = self.m[i](
                 self.ia[i](x[i]) # pass through ImplicitA
             )  # conv
@@ -131,7 +131,7 @@ class IDetect(nn.Module):
                 x[i] # pass through ImplicitM
             ) 
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.num_output, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -140,7 +140,7 @@ class IDetect(nn.Module):
                 y = x[i].sigmoid()
                 y[..., 0:2] = (y[..., 0:2] * 2. - 0.5 + self.grid[i]) * self.stride[i]  # xy
                 y[..., 2:4] = (y[..., 2:4] * 2) ** 2 * self.anchor_grid[i]  # wh
-                z.append(y.view(bs, -1, self.num_output))
+                z.append(y.view(bs, -1, self.no))
 
         return x if self.training else (torch.cat(z, 1), x)
     
@@ -148,12 +148,12 @@ class IDetect(nn.Module):
         # x = x.copy()  # for profiling
         z = []  # inference output
         self.training |= self.export
-        for i in range(self.num_detection_layer):
+        for i in range(self.nl):
             x[i] = self.m[i](
                 x[i]
             )  # conv
             bs, _, ny, nx = x[i].shape  # x(bs,255,20,20) to x(bs,3,20,20,85)
-            x[i] = x[i].view(bs, self.na, self.num_output, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
+            x[i] = x[i].view(bs, self.na, self.no, ny, nx).permute(0, 1, 3, 4, 2).contiguous()
 
             if not self.training:  # inference
                 if self.grid[i].shape[2:4] != x[i].shape[2:4]:
@@ -168,7 +168,7 @@ class IDetect(nn.Module):
                     xy = xy * (2. * self.stride[i]) + (self.stride[i] * (self.grid[i] - 0.5))  # new xy
                     wh = wh ** 2 * (4 * self.anchor_grid[i].data)  # new wh
                     y = torch.cat((xy, wh, conf), 4)
-                z.append(y.view(bs, -1, self.num_output))
+                z.append(y.view(bs, -1, self.no))
 
         if self.training:
             out = x
@@ -517,113 +517,116 @@ class IBin(nn.Module):
 # Segment Head
 ##############
 
-class Refine(nn.Module):
+# class Refine(nn.Module):
 
-    def __init__(self, ch, c_=256, c2=32, k=3):  # ch_in, ch_out, kernel, stride, padding, groups
-        super().__init__()
-        self.refine = nn.ModuleList()
-        for c in ch:
-            self.refine.append(Conv(c, c_, k))
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.cv2 = Conv(c_, c_, k)
-        self.cv3 = Conv(c_, c2)
+#     def __init__(self, ch, c_=256, c2=32, k=3):  # ch_in, ch_out, kernel, stride, padding, groups
+#         super().__init__()
+#         self.refine = nn.ModuleList()
+#         for c in ch:
+#             self.refine.append(Conv(c, c_, k))
+#         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+#         self.cv2 = Conv(c_, c_, k)
+#         self.cv3 = Conv(c_, c2)
 
-    def forward(self, x):
-        for i, f in enumerate(x):
-            if i == 0:
-                r = self.refine[i](f)
-            else:
-                r_p = self.refine[i](f)
-                r_p = F.interpolate(r_p, r.size()[2:], mode="nearest")
-                r = r + r_p
-        return self.cv3(self.cv2(self.upsample(r)))
+#     def forward(self, x):
+#         for i, f in enumerate(x):
+#             if i == 0:
+#                 r = self.refine[i](f)
+#             else:
+#                 r_p = self.refine[i](f)
+#                 r_p = F.interpolate(r_p, r.size()[2:], mode="nearest")
+#                 r = r + r_p
+#         return self.cv3(self.cv2(self.upsample(r)))
 
-class Proto(nn.Module):
-    # YOLOv5 mask Proto module for segmentation models
-    def __init__(self, c1, c_=256, c2=32):  # ch_in, number of protos, number of masks
-        super().__init__()
-        self.cv1 = Conv(c1, c_, k=3)
-        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
-        self.cv2 = Conv(c_, c_, k=3)
-        self.cv3 = Conv(c_, c2)
+# class Proto(nn.Module):
+#     # YOLOv5 mask Proto module for segmentation models
+#     def __init__(self, c1, c_=256, c2=32):  # ch_in, number of protos, number of masks
+#         super().__init__()
+#         self.cv1 = Conv(c1, c_, k=3)
+#         self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+#         self.cv2 = Conv(c_, c_, k=3)
+#         self.cv3 = Conv(c_, c2)
 
-    def forward(self, x):
-        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+#     def forward(self, x):
+#         return self.cv3(self.cv2(self.upsample(self.cv1(x))))
 
-class Segment(Detect):
-    # YOLOv5 Segment head for segmentation models
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
-        super().__init__(nc, anchors, ch)
-        self.nm = nm  # number of masks
-        self.npr = npr  # number of protos
-        self.no = 5 + nc + self.nm  # number of outputs per anchor
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
-        self.detect = Detect.forward
+# class Segment(Detect):
+#     # YOLOv5 Segment head for segmentation models
+#     def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=()): # swap ch for nm, npr when passing *args
+#         super().__init__(nc, anchors, ch)
+#         self.nm = nm  # number of masks
+#         self.npr = npr  # number of protos
+#         self.no = 5 + nc + self.nm  # number of outputs per anchor
+#         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+#         self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+#         self.detect = Detect.forward
 
-    def forward(self, x):
-        p = self.proto(x[0])
-        x = self.detect(self, x)
-        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
-
-
-class ISegment(IDetect):
-    # YOLOR Segment head for segmentation models
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
-        super().__init__(nc, anchors, ch)
-        self.nm = nm  # number of masks
-        self.npr = npr  # number of protos
-        self.no = 5 + nc + self.nm  # number of outputs per anchor
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
-        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
-        self.detect = IDetect.forward
-
-    def forward(self, x):
-        p = self.proto(x[0])
-        x = self.detect(self, x)
-        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+#     def forward(self, x):
+#         p = self.proto(x[0])
+#         x = self.detect(self, x)
+#         return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
 
 
-class IRSegment(IDetect):
-    # YOLOR Segment head for segmentation models
-    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
-        super().__init__(nc, anchors, ch)
-        self.nm = nm  # number of masks
-        self.npr = npr  # number of protos
-        self.no = 5 + nc + self.nm  # number of outputs per anchor
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch[self.nl:])  # output conv
-        self.refine = Refine(ch[:self.nl], self.npr, self.nm)  # protos
-        self.detect = IDetect.forward
+# class ISegment(IDetect):
+#     # YOLOR Segment head for segmentation models
+#     def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=()):
+#         super().__init__(nc, anchors, ch)
+#         self.nm = nm  # number of masks
+#         self.npr = npr  # number of protos
+#         self.no = 5 + nc + self.nm  # number of outputs per anchor
+#         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+#         self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+#         self.detect = IDetect.forward
 
-    def forward(self, x):
-        p = self.refine(x[:self.nl])
-        x = self.detect(self, x[self.nl:])
-        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+#     def forward(self, x):
+#         p = self.proto(x[0])
+#         x = self.detect(self, x)
+#         return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
 
+
+# class IRSegment(IDetect):
+#     # YOLOR Segment head for segmentation models
+#     def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=()):
+#         super().__init__(nc, anchors, ch)
+#         self.nm = nm  # number of masks
+#         self.npr = npr  # number of protos
+#         self.no = 5 + nc + self.nm  # number of outputs per anchor
+#         self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch[self.nl:])  # output conv
+#         self.refine = Refine(ch[:self.nl], self.npr, self.nm)  # protos
+#         self.detect = IDetect.forward
+
+#     def forward(self, x):
+#         p = self.refine(x[:self.nl])
+#         x = self.detect(self, x[self.nl:])
+#         return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+
+
+# #####################
+# # Classification Head
+# #####################
+
+# class Classify(nn.Module):
+#     # YOLOv5 classification head, i.e. x(b,c1,20,20) to x(b,c2)
+#     def __init__(self, c1, c2, k=1, s=1, p=None, g=1):  # ch_in, ch_out, kernel, stride, padding, groups
+#         super().__init__()
+#         c_ = 1280  # efficientnet_b0 size
+#         self.conv = Conv(c1, c_, k, s, autopad(k, p), g)
+#         self.pool = nn.AdaptiveAvgPool2d(1)  # to x(b,c_,1,1)
+#         self.drop = nn.Dropout(p=0.0, inplace=True)
+#         self.linear = nn.Linear(c_, c2)  # to x(b,c2)
+
+#     def forward(self, x):
+#         if isinstance(x, list):
+#             x = torch.cat(x, 1)
+#         return self.linear(self.drop(self.pool(self.conv(x)).flatten(1)))
 
 #####################
-# Classification Head
+# Model
 #####################
-
-class Classify(nn.Module):
-    # YOLOv5 classification head, i.e. x(b,c1,20,20) to x(b,c2)
-    def __init__(self, c1, c2, k=1, s=1, p=None, g=1):  # ch_in, ch_out, kernel, stride, padding, groups
-        super().__init__()
-        c_ = 1280  # efficientnet_b0 size
-        self.conv = Conv(c1, c_, k, s, autopad(k, p), g)
-        self.pool = nn.AdaptiveAvgPool2d(1)  # to x(b,c_,1,1)
-        self.drop = nn.Dropout(p=0.0, inplace=True)
-        self.linear = nn.Linear(c_, c2)  # to x(b,c2)
-
-    def forward(self, x):
-        if isinstance(x, list):
-            x = torch.cat(x, 1)
-        return self.linear(self.drop(self.pool(self.conv(x)).flatten(1)))
-
 
 class Model(nn.Module):
     # TODO: change nc
-    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=None, anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc_per_head = [], anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
         if isinstance(cfg, dict):
@@ -636,59 +639,89 @@ class Model(nn.Module):
 
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
-        if nc and nc != self.yaml['nc']:
-            logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
-            self.yaml['nc'] = nc  # override yaml value
+
+        for idx, e_nc in enumerate(nc_per_head):
+            if e_nc != self.yaml['nc_heads'][idx]:
+                logger.info(f"Overriding model.yaml nc={self.yaml['nc_heads'][idx]} with nc_head1={e_nc}")
+                self.yaml['nc_heads'][idx] = e_nc
+        # if nc_head1 and nc_head1 != self.yaml['nc_head1']:
+        #     logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc_head1={nc_head1}")
+        #     self.yaml['nc_head1'] = nc_head1  # override yaml value
+        # if nc_head2 and nc_head2 != self.yaml['nc_head2']:
+        #     logger.info(f"Overriding model.yaml nc={self.yaml['nc_head2']} with nc={nc_head2}")
+        #     self.yaml['nc_head2'] = nc_head2  # override yaml value
         if anchors:
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
-        self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
+
+        # self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
+        self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
         # Build strides, anchors
-        m = self.model[-1]  # Detect()
-        if isinstance(m, Detect):
-            s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
-            self.stride = m.stride
-            self._initialize_biases()  # only run once
-            # print('Strides: %s' % m.stride.tolist())
-        if isinstance(m, IDetect):
-            s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
-            self.stride = m.stride
-            self._initialize_biases()  # only run once
-            # print('Strides: %s' % m.stride.tolist())
-        if isinstance(m, IAuxDetect):
-            s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
-            #print(m.stride)
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
-            self.stride = m.stride
-            self._initialize_aux_biases()  # only run once
-            # print('Strides: %s' % m.stride.tolist())
-        if isinstance(m, IBin):
-            s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
-            self.stride = m.stride
-            self._initialize_biases_bin()  # only run once
-            # print('Strides: %s' % m.stride.tolist())
-        if isinstance(m, IKeypoint):
-            s = 256  # 2x min stride
-            m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
-            check_anchor_order(m)
-            m.anchors /= m.stride.view(-1, 1, 1)
-            self.stride = m.stride
-            self._initialize_biases_kpt()  # only run once
-            # print('Strides: %s' % m.stride.tolist())
+        heads = self.model[-len(nc_per_head):]  # get list of heads base on len of nc_per_head 
+        print(heads)
+        for m in heads:
+            # if isinstance(m, Detect) or isinstance(m, Segment):
+            #     s = 256  # 2x min stride
+            #     m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            #     check_anchor_order(m)
+            #     m.anchors /= m.stride.view(-1, 1, 1)
+            #     self.stride = m.stride
+            #     self._initialize_biases()  # only run once
+            #     # print('Strides: %s' % m.stride.tolist())
+            if isinstance(m, Detect) or isinstance(m, Segment):
+                s = 256  # 2x min stride
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+                check_anchor_order(m)
+                m.anchors /= m.stride.view(-1, 1, 1)
+                self.stride = m.stride
+                self._initialize_biases()  # only run once
+                # print('Strides: %s' % m.stride.tolist())
+            if isinstance(m, IDetect):
+                s = 256  # 2x min stride
+                for x in self.forward(torch.zeros(1, ch, s, s)):
+                    print("forward:", x)
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[0]])  # forward return first head output
+                check_anchor_order(m)
+                m.anchors /= m.stride.view(-1, 1, 1)
+                self.stride = m.stride
+                self._initialize_biases(index=0)  # only run once
+                # print('Strides: %s' % m.stride.tolist())
+            if isinstance(m, IAuxDetect):
+                s = 256  # 2x min stride
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[:4]])  # forward
+                #print(m.stride)
+                check_anchor_order(m)
+                m.anchors /= m.stride.view(-1, 1, 1)
+                self.stride = m.stride
+                self._initialize_aux_biases()  # only run once
+                # print('Strides: %s' % m.stride.tolist())
+            if isinstance(m, IBin):
+                s = 256  # 2x min stride
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+                check_anchor_order(m)
+                m.anchors /= m.stride.view(-1, 1, 1)
+                self.stride = m.stride
+                self._initialize_biases_bin()  # only run once
+                # print('Strides: %s' % m.stride.tolist())
+            if isinstance(m, IKeypoint):
+                s = 256  # 2x min stride
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+                check_anchor_order(m)
+                m.anchors /= m.stride.view(-1, 1, 1)
+                self.stride = m.stride
+                self._initialize_biases_kpt()  # only run once
+                # print('Strides: %s' % m.stride.tolist())
+
+            # if isinstance(m, Classify):
+            #     s = 256  # 2x min stride
+            #     m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
+            #     check_anchor_order(m)
+            #     m.anchors /= m.stride.view(-1, 1, 1)
+            #     self.stride = m.stride
+            #     self._initialize_biases()  # only run once
 
         # Init weights, biases
         initialize_weights(self)
@@ -725,9 +758,11 @@ class Model(nn.Module):
                 self.traced=False
 
             if self.traced:
+                # if isinstance(m, Detect) or isinstance(m, IDetect) or isinstance(m, IAuxDetect) or isinstance(m, ISegment) \
+                # or isinstance(m, IKeypoint) or isinstance(m, Segment) or isinstance(m, IRSegment):
+                #     break
                 if isinstance(m, Detect) or isinstance(m, IDetect) or isinstance(m, IAuxDetect) or isinstance(m, IKeypoint):
                     break
-
             if profile:
                 c = isinstance(m, (Detect, IDetect, IAuxDetect, IBin))
                 o = thop.profile(m, inputs=(x.copy() if c else x,), verbose=False)[0] / 1E9 * 2 if thop else 0  # FLOPS
@@ -843,7 +878,7 @@ class Model(nn.Module):
     def autoshape(self):  # add autoShape module
         print('Adding autoShape... ')
         m = autoShape(self)  # wrap model
-        copy_attr(m, self, include=('yaml', 'nc', 'hyp', 'names', 'stride'), exclude=())  # copy attributes
+        copy_attr(m, self, include=('yaml', 'nc', 'hyp', 'names_heads', 'stride'), exclude=())  # copy attributes
         return m
 
     def info(self, verbose=False, img_size=640):  # print model information
@@ -852,12 +887,13 @@ class Model(nn.Module):
 
 def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
-    anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
+    anchors, nc_heads, gd, gw = d['anchors'], d['nc_heads'], d['depth_multiple'], d['width_multiple']
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
+    no = na * (nc_heads[0] + 5)  # number of outputs = anchors * (classes + 5)
+    # Error case -> first head may be not detect head, should be handled in the future
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
-    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head']):  # from, number, module, args
+    for i, (f, n, m, args) in enumerate(d['backbone'] + d['head'][:-1]):  # from, number, module, args
         m = eval(m) if isinstance(m, str) else m  # eval strings
         for j, a in enumerate(args):
             try:
@@ -904,10 +940,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f[0]]
         elif m is Foldcut:
             c2 = ch[f] // 2
-        elif m in [Detect, IDetect, IAuxDetect, IBin, IKeypoint]:
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
         elif m is ReOrg:
             c2 = ch[f] * 4
         elif m is Contract:
@@ -926,6 +958,36 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         layers.append(m_)
         if i == 0:
             ch = []
+        ch.append(c2)
+    
+    current_index_layer = len(layers) - 1
+    # process for last heads
+    heads = d['head'][-1]
+    for idx, (f, n, m, args) in enumerate(heads):
+
+        m = eval(m) if isinstance(m, str) else m  # eval strings
+        for j, a in enumerate(args):
+            try:
+                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+            except:
+                pass
+        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+        # if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint, Segment, ISegment, IRSegment):
+        if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
+            args.append([ch[x] for x in f])
+            if isinstance(args[1], int):  # number of anchors
+                args[1] = [list(range(args[1] * 2))] * len(f)
+            # if m in {Segment, ISegment, IRSegment}:
+            #     # channel
+            #     args[3] = make_divisible(args[3] * gw, 8)
+    
+        m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+        t = str(m)[8:-2].replace('__main__.', '')  # module type
+        np = sum([x.numel() for x in m_.parameters()])  # number params
+        m_.i, m_.f, m_.type, m_.np = current_index_layer + idx, f, t, np  # attach index, 'from' index, type, number params
+        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (current_index_layer + idx, f, n, np, t, args))  # print
+        save.extend(x % (current_index_layer + idx) for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+        layers.append(m_)
         ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
 
