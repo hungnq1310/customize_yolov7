@@ -513,6 +513,113 @@ class IBin(nn.Module):
         yv, xv = torch.meshgrid([torch.arange(ny), torch.arange(nx)])
         return torch.stack((xv, yv), 2).view((1, 1, ny, nx, 2)).float()
 
+##############
+# Segment Head
+##############
+
+class Refine(nn.Module):
+
+    def __init__(self, ch, c_=256, c2=32, k=3):  # ch_in, ch_out, kernel, stride, padding, groups
+        super().__init__()
+        self.refine = nn.ModuleList()
+        for c in ch:
+            self.refine.append(Conv(c, c_, k))
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        self.cv2 = Conv(c_, c_, k)
+        self.cv3 = Conv(c_, c2)
+
+    def forward(self, x):
+        for i, f in enumerate(x):
+            if i == 0:
+                r = self.refine[i](f)
+            else:
+                r_p = self.refine[i](f)
+                r_p = F.interpolate(r_p, r.size()[2:], mode="nearest")
+                r = r + r_p
+        return self.cv3(self.cv2(self.upsample(r)))
+
+class Proto(nn.Module):
+    # YOLOv5 mask Proto module for segmentation models
+    def __init__(self, c1, c_=256, c2=32):  # ch_in, number of protos, number of masks
+        super().__init__()
+        self.cv1 = Conv(c1, c_, k=3)
+        self.upsample = nn.Upsample(scale_factor=2, mode='nearest')
+        self.cv2 = Conv(c_, c_, k=3)
+        self.cv3 = Conv(c_, c2)
+
+    def forward(self, x):
+        return self.cv3(self.cv2(self.upsample(self.cv1(x))))
+
+class Segment(Detect):
+    # YOLOv5 Segment head for segmentation models
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+        super().__init__(nc, anchors, ch, inplace)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        self.no = 5 + nc + self.nm  # number of outputs per anchor
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+        self.detect = Detect.forward
+
+    def forward(self, x):
+        p = self.proto(x[0])
+        x = self.detect(self, x)
+        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+
+
+class ISegment(IDetect):
+    # YOLOR Segment head for segmentation models
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+        super().__init__(nc, anchors, ch, inplace)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        self.no = 5 + nc + self.nm  # number of outputs per anchor
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        self.proto = Proto(ch[0], self.npr, self.nm)  # protos
+        self.detect = IDetect.forward
+
+    def forward(self, x):
+        p = self.proto(x[0])
+        x = self.detect(self, x)
+        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+
+
+class IRSegment(IDetect):
+    # YOLOR Segment head for segmentation models
+    def __init__(self, nc=80, anchors=(), nm=32, npr=256, ch=(), inplace=True):
+        super().__init__(nc, anchors, ch, inplace)
+        self.nm = nm  # number of masks
+        self.npr = npr  # number of protos
+        self.no = 5 + nc + self.nm  # number of outputs per anchor
+        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch[self.nl:])  # output conv
+        self.refine = Refine(ch[:self.nl], self.npr, self.nm)  # protos
+        self.detect = IDetect.forward
+
+    def forward(self, x):
+        p = self.refine(x[:self.nl])
+        x = self.detect(self, x[self.nl:])
+        return (x, p) if self.training else (x[0], p) if self.export else (x[0], (x[1], p))
+
+
+#####################
+# Classification Head
+#####################
+
+class Classify(nn.Module):
+    # YOLOv5 classification head, i.e. x(b,c1,20,20) to x(b,c2)
+    def __init__(self, c1, c2, k=1, s=1, p=None, g=1):  # ch_in, ch_out, kernel, stride, padding, groups
+        super().__init__()
+        c_ = 1280  # efficientnet_b0 size
+        self.conv = Conv(c1, c_, k, s, autopad(k, p), g)
+        self.pool = nn.AdaptiveAvgPool2d(1)  # to x(b,c_,1,1)
+        self.drop = nn.Dropout(p=0.0, inplace=True)
+        self.linear = nn.Linear(c_, c2)  # to x(b,c2)
+
+    def forward(self, x):
+        if isinstance(x, list):
+            x = torch.cat(x, 1)
+        return self.linear(self.drop(self.pool(self.conv(x)).flatten(1)))
+
 
 class Model(nn.Module):
     # TODO: change nc
