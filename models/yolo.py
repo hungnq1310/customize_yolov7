@@ -660,7 +660,7 @@ class Model(nn.Module):
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
         # Build strides, anchors
-        heads = self.model[-len(nc_per_head):]  # get list of heads base on len of nc_per_head 
+        heads = self.model[-1]  # Concatenate list of Detect() module heads        
         print(heads)
         for m in heads:
             # if isinstance(m, Detect) or isinstance(m, Segment):
@@ -671,7 +671,8 @@ class Model(nn.Module):
             #     self.stride = m.stride
             #     self._initialize_biases()  # only run once
             #     # print('Strides: %s' % m.stride.tolist())
-            if isinstance(m, Detect) or isinstance(m, Segment):
+            # if isinstance(m, Detect) or isinstance(m, Segment):
+            if isinstance(m, Detect):
                 s = 256  # 2x min stride
                 m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
                 check_anchor_order(m)
@@ -930,6 +931,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                      ST2CSPA, ST2CSPB, ST2CSPC]:
                 args.insert(2, n)  # number of repeats
                 n = 1
+        elif m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
+            args.append([ch[x] for x in f])
+            if isinstance(args[1], int):  # number of anchors
+                args[1] = [list(range(args[1] * 2))] * len(f)
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:
@@ -960,35 +965,35 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             ch = []
         ch.append(c2)
     
-    current_index_layer = len(layers) - 1
-    # process for last heads
-    heads = d['head'][-1]
-    for idx, (f, n, m, args) in enumerate(heads):
+    # current_index_layer = len(layers) - 1
+    # # process for last heads
+    # heads = d['head'][-1]
+    # for idx, (f, n, m, args) in enumerate(heads):
 
-        m = eval(m) if isinstance(m, str) else m  # eval strings
-        for j, a in enumerate(args):
-            try:
-                args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-            except:
-                pass
-        n = max(round(n * gd), 1) if n > 1 else n  # depth gain
-        # if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint, Segment, ISegment, IRSegment):
-        if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
-            # if m in {Segment, ISegment, IRSegment}:
-            #     # channel
-            #     args[3] = make_divisible(args[3] * gw, 8)
+    #     m = eval(m) if isinstance(m, str) else m  # eval strings
+    #     for j, a in enumerate(args):
+    #         try:
+    #             args[j] = eval(a) if isinstance(a, str) else a  # eval strings
+    #         except:
+    #             pass
+    #     n = max(round(n * gd), 1) if n > 1 else n  # depth gain
+    #     # if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint, Segment, ISegment, IRSegment):
+    #     if m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
+    #         args.append([ch[x] for x in f])
+    #         if isinstance(args[1], int):  # number of anchors
+    #             args[1] = [list(range(args[1] * 2))] * len(f)
+    #         # if m in {Segment, ISegment, IRSegment}:
+    #         #     # channel
+    #         #     args[3] = make_divisible(args[3] * gw, 8)
     
-        m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
-        t = str(m)[8:-2].replace('__main__.', '')  # module type
-        np = sum([x.numel() for x in m_.parameters()])  # number params
-        m_.i, m_.f, m_.type, m_.np = current_index_layer + idx, f, t, np  # attach index, 'from' index, type, number params
-        logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (current_index_layer + idx, f, n, np, t, args))  # print
-        save.extend(x % (current_index_layer + idx) for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
-        layers.append(m_)
-        ch.append(c2)
+    #     m_ = nn.Sequential(*[m(*args) for _ in range(n)]) if n > 1 else m(*args)  # module
+    #     t = str(m)[8:-2].replace('__main__.', '')  # module type
+    #     np = sum([x.numel() for x in m_.parameters()])  # number params
+    #     m_.i, m_.f, m_.type, m_.np = current_index_layer + idx, f, t, np  # attach index, 'from' index, type, number params
+    #     logger.info('%3s%18s%3s%10.0f  %-40s%-30s' % (current_index_layer + idx, f, n, np, t, args))  # print
+    #     save.extend(x % (current_index_layer + idx) for x in ([f] if isinstance(f, int) else f) if x != -1)  # append to savelist
+    #     layers.append(m_)
+    #     ch.append(c2)
     return nn.Sequential(*layers), sorted(save)
 
 
