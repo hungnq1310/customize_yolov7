@@ -629,7 +629,7 @@ class IBin(nn.Module):
 
 class Model(nn.Module):
     # TODO: change nc
-    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc_per_head = [], anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc_heads = [], anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
         if isinstance(cfg, dict):
@@ -643,9 +643,9 @@ class Model(nn.Module):
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
 
-        for idx, e_nc in enumerate(nc_per_head):
+        for idx, e_nc in enumerate(nc_heads):
             if e_nc != self.yaml['nc_heads'][idx]:
-                logger.info(f"Overriding model.yaml nc={self.yaml['nc_heads'][idx]} with nc_head1={e_nc}")
+                logger.info(f"Overriding model.yaml nc_head_{idx}={self.yaml['nc_heads'][idx]} with nc_head_{idx}={e_nc}")
                 self.yaml['nc_heads'][idx] = e_nc
         # if nc_head1 and nc_head1 != self.yaml['nc_head1']:
         #     logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc_head1={nc_head1}")
