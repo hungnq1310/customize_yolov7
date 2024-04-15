@@ -657,7 +657,6 @@ class Model(nn.Module):
             logger.info(f'Overriding model.yaml anchors with anchors={anchors}')
             self.yaml['anchors'] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
-        print(self.model)
 
         # self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
         self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
@@ -684,8 +683,6 @@ class Model(nn.Module):
                 # print('Strides: %s' % m.stride.tolist())
             if isinstance(m, IDetect):
                 s = 256  # 2x min stride
-                for x in self.forward(torch.zeros(1, ch, s, s)):
-                    print("forward:", x)
                 m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward return first head output
                 check_anchor_order(m)
                 m.anchors /= m.stride.view(-1, 1, 1)
@@ -776,7 +773,7 @@ class Model(nn.Module):
                     m(x.copy() if c else x)
                 dt.append((time_synchronized() - t) * 100)
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
-            print(f"Module: {m}, x.shape:", len(x))
+
             x = m(x)  # run
 
             y.append(x if m.i in self.save else None)  # save output
@@ -900,7 +897,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
         for j, a in enumerate(args):
             try:
                 args[j] = eval(a) if isinstance(a, str) else a  # eval strings
-            except:
+            except:``
                 pass
 
         n = max(round(n * gd), 1) if n > 1 else n  # depth gain
