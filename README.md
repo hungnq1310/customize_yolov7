@@ -80,7 +80,7 @@ You will get the results:
 
 To measure accuracy, download [COCO-annotations for Pycocotools](http://images.cocodataset.org/annotations/annotations_trainval2017.zip) to the `./coco/annotations/instances_val2017.json`
 
-## Training
+<!-- ## Training
 
 Data preparation
 
@@ -108,23 +108,47 @@ python -m torch.distributed.launch --nproc_per_node 4 --master_port 9527 train.p
 
 # train p6 models
 python -m torch.distributed.launch --nproc_per_node 8 --master_port 9527 train_aux.py --workers 8 --device 0,1,2,3,4,5,6,7 --sync-bn --batch-size 128 --data data/coco.yaml --img 1280 1280 --cfg cfg/training/yolov7-w6.yaml --weights '' --name yolov7-w6 --hyp data/hyp.scratch.p6.yaml
+``` -->
+
+
+## Data collator
+
+Data preparation
+
+``` shell
+bash scripts/get_coco.sh
 ```
+
+* Download MS COCO dataset images ([train](http://images.cocodataset.org/zips/train2017.zip), [val](http://images.cocodataset.org/zips/val2017.zip), [test](http://images.cocodataset.org/zips/test2017.zip)) and [labels](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/coco2017labels-segments.zip). If you have previously used a different version of YOLO, we strongly recommend that you delete `train2017.cache` and `val2017.cache` files, and redownload [labels](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/coco2017labels-segments.zip) 
+
+Using pycoco library to filter only need classes, here I use `val2017.txt` to filter and get the needed images. Scripts to create image is [scripts](tools/eda.ipynb) in `tools` folder:
+
+```
+filterClasses = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light','fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',]
+```
+
+- Number of images containing all the  classes: 2693. This will be used for finetuning with pretrained weights
+- After downloading CoCo dataset, change the path lead to filtered custom data in file `data/coco.yaml`
+![](assess/image.png)
+```
+train: ./coco/custom/train2017.txt  # 2693 images
+```
+- Label get from pycoco lib will also be saved in `custom/` folder. Order will be `(class,x,y,w,h)`
+![](assess/image_2.png)
+
 
 ## Transfer learning
 
 [`yolov7_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7_training.pt) [`yolov7x_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7x_training.pt) [`yolov7-w6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-w6_training.pt) [`yolov7-e6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6_training.pt) [`yolov7-d6_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-d6_training.pt) [`yolov7-e6e_training.pt`](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/yolov7-e6e_training.pt)
 
-Single GPU finetuning for custom dataset
+Single GPU finetuning for custom dataset, all the script will be same as origin repo, `data/coco.yaml` is changed to train.
 
 ``` shell
 # finetune p5 models
-python train.py --workers 8 --device 0 --batch-size 32 --data data/custom.yaml --img 640 640 --cfg cfg/training/yolov7-custom.yaml --weights 'yolov7_training.pt' --name yolov7-custom --hyp data/hyp.scratch.custom.yaml
-
-# finetune p6 models
-python train_aux.py --workers 8 --device 0 --batch-size 16 --data data/custom.yaml --img 1280 1280 --cfg cfg/training/yolov7-w6-custom.yaml --weights 'yolov7-w6_training.pt' --name yolov7-w6-custom --hyp data/hyp.scratch.custom.yaml
+python train.py --workers 2 --device 0 --batch-size 4 --data data/coco.yaml --img 640 640 --epochs 10 --cfg cfg/training/yolov7.yaml --weights 'weights/yolov7.pt' --name yolov7-custom --hyp data/hyp.scratch.custom.yaml
 ```
 
-## Re-parameterization
+<!-- ## Re-parameterization
 
 See [reparameterization.ipynb](tools/reparameterization.ipynb)
 
@@ -307,4 +331,53 @@ YOLOv7-3d-detection & YOLOv7-lidar & YOLOv7-road (with NTUT)
 * [https://github.com/JUGGHM/OREPA_CVPR2022](https://github.com/JUGGHM/OREPA_CVPR2022)
 * [https://github.com/TexasInstruments/edgeai-yolov5/tree/yolo-pose](https://github.com/TexasInstruments/edgeai-yolov5/tree/yolo-pose)
 
-</details>
+</details> -->
+
+
+## Custom Model
+### Extend Detection Head
+- Add one more `Dectection` layer in `cfg/training/yolov7.ymal`. This layer connect with preceed layers like the previous one.
+![](assess/image_3.png)
+
+### Extend collate_fn
+- That's why collator of datasets will change size's `labels_out` to `[nL, 6]` instead of `[nL, 3]`, 3 will be the default number of anchors
+![](assess/hinh_6.png)
+
+
+### Refactor Model
+- class Model now will not reviece `nc` value because the scale of detecion head, and `nc` now will be compute by `sum(nc_heads)`
+![](assess/image_7.png)
+
+- add argument `m` to pass to function `_initialize_biases()`, this will ensure both Detect head have initilize instead only last layer  `m = self.model[-1]`
+![](assess/image_5.png)
+
+### change loss function
+- The output of model return `[list of detection layer] x 2`, so I need to change `ComputeLossOTA` class.
+- because loss is counted on number anchors, I just need resize the output from `(w, h, na, 2)` to `(-1, 6)` where 6 is `na*2`
+![](assess/image_4.png)
+
+### Final layer model
+![](assess/model.png)
+
+## Currently Status
+Model now can run succesfully, but when testing with `val2017` dataset, it's failure. Because of limitation and all in effor, there is also no exist result to view, I'm sorry for that.   
+
+```
+Transferred 552/568 items from weights/yolov7.pt
+Scaled weight_decay = 0.0005
+Optimizer groups: 98 .bias, 98 conv.weight, 92 other
+train: Scanning 'coco/custom/train_custom.cache' images and labels... 2693 found, 0 missing, 0 empty, 0 corrupted: 100%|████████████████████████████████████████████████████████████████████████| 2693/2693 [00:00<?, ?it/s]
+val: Scanning 'coco/val2017.cache' images and labels... 4952 found, 48 missing, 0 empty, 0 corrupted: 100%|█████████████████████████████████████████████████████████████████████████████████████| 5000/5000 [00:00<?, ?it/s]
+
+autoanchor: Analyzing anchors... anchors/target = 4.49, Best Possible Recall (BPR) = 0.9936
+Image sizes 640 train, 640 test
+Using 2 dataloader workers
+Logging results to runs/train/yolov7-custom52
+Starting training for 10 epochs...
+
+     Epoch   gpu_mem       box       obj       cls     total    labels  img_size
+       0/9     1.02G   0.05821   0.01681   0.01696   0.09198        10       640: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████| 674/674 [06:44<00:00,  1.67it/s
+```
+
+
+
