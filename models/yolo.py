@@ -37,7 +37,10 @@ class Detect(nn.Module):
         a = torch.tensor(anchors).float().view(self.nl, -1, 2)
         self.register_buffer('anchors', a)  # shape(nl,na,2)
         self.register_buffer('anchor_grid', a.clone().view(self.nl, 1, -1, 1, 1, 2))  # shape(nl,1,na,1,1,2)
-        self.m = nn.ModuleList(nn.Conv2d(x, self.no * self.na, 1) for x in ch)  # output conv
+        
+        self.m = nn.ModuleList()  # output conv
+        for x in ch:
+            self.m.append(nn.Conv2d(x, self.no * self.na, 1)) 
 
     def forward(self, x):
         # x = x.copy()  # for profiling
@@ -660,10 +663,8 @@ class Model(nn.Module):
         self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
-        # Build strides, anchors
-        heads = self.model[-1]  # Concatenate list of Detect() module heads        
-        print(heads)
-        for m in heads:
+        # Build strides, anchors for head
+        for m in self.model:
             # if isinstance(m, Detect) or isinstance(m, Segment):
             #     s = 256  # 2x min stride
             #     m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -689,7 +690,7 @@ class Model(nn.Module):
                 check_anchor_order(m)
                 m.anchors /= m.stride.view(-1, 1, 1)
                 self.stride = m.stride
-                self._initialize_biases(index=0)  # only run once
+                self._initialize_biases()  # only run once
                 # print('Strides: %s' % m.stride.tolist())
             if isinstance(m, IAuxDetect):
                 s = 256  # 2x min stride
@@ -775,9 +776,9 @@ class Model(nn.Module):
                     m(x.copy() if c else x)
                 dt.append((time_synchronized() - t) * 100)
                 print('%10.1f%10.0f%10.1fms %-40s' % (o, m.np, dt[-1], m.type))
-
+            print(f"Module: {m}, x.shape:", len(x))
             x = m(x)  # run
-            
+
             y.append(x if m.i in self.save else None)  # save output
 
         if profile:
@@ -1000,7 +1001,7 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cfg', type=str, default='yolor-csp-c.yaml', help='model.yaml')
+    parser.add_argument('--cfg', type=str, default='/home/hungnq/hungnq_2/yolov7/cfg/training/yolov7.yaml', help='model.yaml')
     parser.add_argument('--device', default='', help='cuda device, i.e. 0 or 0,1,2,3 or cpu')
     parser.add_argument('--profile', action='store_true', help='profile model speed')
     opt = parser.parse_args()
