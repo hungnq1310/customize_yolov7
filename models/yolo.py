@@ -686,7 +686,7 @@ class Model(nn.Module):
                 s = 256  # 2x min stride
                 for x in self.forward(torch.zeros(1, ch, s, s)):
                     print("forward:", x)
-                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))[0]])  # forward return first head output
+                m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward return first head output
                 check_anchor_order(m)
                 m.anchors /= m.stride.view(-1, 1, 1)
                 self.stride = m.stride
