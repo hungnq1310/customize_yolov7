@@ -289,11 +289,12 @@ def train(hyp, opt, device, tb_writer=None):
     hyp['cls'] *= sum(nc_heads) / 80. * 3. / nl  # scale to classes and layers #
     hyp['obj'] *= (imgsz / 640) ** 2 * 3. / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
-    model.nc_heads = sum(nc_heads)  # attach number of classes to model # TODO
+    # model.nc = sum(nc_heads)  # attach number of classes to model # TODO
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
     model.class_weights = labels_to_class_weights(dataset.labels, sum(nc_heads)).to(device) * sum(nc_heads)  # attach class weights
     model.names = names
+    nc = sum(nc_heads)  # number of classes
 
     # Start training
     t0 = time.time()
