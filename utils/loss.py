@@ -438,6 +438,7 @@ class ComputeLoss:
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
+        # TODO: module[-1] -> currently not conflict but need to be fixed
         det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
         #self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.1, .05])  # P3-P7
@@ -636,7 +637,8 @@ class ComputeLossOTA:
         return loss * bs, torch.cat((lbox, lobj, lcls, loss)).detach()
 
     def build_targets(self, p, targets, imgs):
-        
+
+        targets = targets.view((-1, 6))  # to shape [n, 6]
         #indices, anch = self.find_positive(p, targets)
         indices, anch = self.find_3_positive(p, targets)
         #indices, anch = self.find_4_positive(p, targets)
