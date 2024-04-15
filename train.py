@@ -75,9 +75,11 @@ def train(hyp, opt, device, tb_writer=None):
         if wandb_logger.wandb:
             weights, epochs, hyp = opt.weights, opt.epochs, opt.hyp  # WandbLogger might update weights, epochs if resuming
 
-    nc = 1 if opt.single_cls else int(data_dict['nc'])  # number of classes
-    names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
-    assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
+    # nc = 1 if opt.single_cls else data_dict['nc'])  # number of classes
+    nc_heads = data_dict['nc_heads']  # number of classes
+    # names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
+    names = data_dict['names']  # class names
+    assert len(names) == len(nc_heads), '%g names found for nc_heads=%g dataset in %s' % (len(names), nc_heads, opt.data)  # check
 
     # Model
     pretrained = weights.endswith('.pt')
@@ -85,18 +87,18 @@ def train(hyp, opt, device, tb_writer=None):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
-        model = Model(opt.cfg, ch=3, nc=nc, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
-    test_path = data_dict['val']
+    test_path = data_dict['test']
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # parameter names to freeze (full or partial)
@@ -246,9 +248,11 @@ def train(hyp, opt, device, tb_writer=None):
                                             hyp=hyp, augment=True, cache=opt.cache_images, rect=opt.rect, rank=rank,
                                             world_size=opt.world_size, workers=opt.workers,
                                             image_weights=opt.image_weights, quad=opt.quad, prefix=colorstr('train: '))
-    mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
+    #TODO: Labels scale
+    # mlc = np.concatenate(dataset.labels, 0)[:, 0].max()  # max label class
     nb = len(dataloader)  # number of batches
-    assert mlc < nc, 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc, opt.data, nc - 1)
+    # assert mlc < nc_heads[0], 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc_heads[0], opt.data, nc_heads[0] - 1)
+    # assert mlc < nc_heads[1], 'Label class %g exceeds nc=%g in %s. Possible class labels are 0-%g' % (mlc, nc_heads[1], opt.data, nc_heads[1] - 1)
 
     # Process 0
     if rank in [-1, 0]:
@@ -258,14 +262,14 @@ def train(hyp, opt, device, tb_writer=None):
                                        pad=0.5, prefix=colorstr('val: '))[0]
 
         if not opt.resume:
-            labels = np.concatenate(dataset.labels, 0)
-            c = torch.tensor(labels[:, 0])  # classes
-            # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
-            # model._initialize_biases(cf.to(device))
-            if plots:
-                #plot_labels(labels, names, save_dir, loggers)
-                if tb_writer:
-                    tb_writer.add_histogram('classes', c, 0)
+            # labels = np.concatenate(dataset.labels, 0)
+            # c = torch.tensor(labels[:, 0])  # classes
+            # # cf = torch.bincount(c.long(), minlength=nc) + 1.  # frequency
+            # # model._initialize_biases(cf.to(device))
+            # if plots:
+            #     #plot_labels(labels, names, save_dir, loggers)
+            #     if tb_writer:
+            #         tb_writer.add_histogram('classes', c, 0)
 
             # Anchors
             if not opt.noautoanchor:
@@ -280,20 +284,22 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Model parameters
     hyp['box'] *= 3. / nl  # scale to layers
-    hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers
+    #TODO:
+    # hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers #
+    hyp['cls'] *= sum(nc_heads) / 80. * 3. / nl  # scale to classes and layers #
     hyp['obj'] *= (imgsz / 640) ** 2 * 3. / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
-    model.nc = nc  # attach number of classes to model
+    model.nc_heads = sum(nc_heads)  # attach number of classes to model # TODO
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
+    model.class_weights = labels_to_class_weights(dataset.labels, sum(nc_heads)).to(device) * sum(nc_heads)  # attach class weights
     model.names = names
 
     # Start training
     t0 = time.time()
     nw = max(round(hyp['warmup_epochs'] * nb), 1000)  # number of warmup iterations, max(3 epochs, 1k iterations)
     # nw = min(nw, (epochs - start_epoch) / 2 * nb)  # limit warmup to < 1/2 of training
-    maps = np.zeros(nc)  # mAP per class
+    maps = np.zeros((10, 10))  # mAP per class
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
