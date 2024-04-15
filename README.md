@@ -121,7 +121,7 @@ bash scripts/get_coco.sh
 
 * Download MS COCO dataset images ([train](http://images.cocodataset.org/zips/train2017.zip), [val](http://images.cocodataset.org/zips/val2017.zip), [test](http://images.cocodataset.org/zips/test2017.zip)) and [labels](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/coco2017labels-segments.zip). If you have previously used a different version of YOLO, we strongly recommend that you delete `train2017.cache` and `val2017.cache` files, and redownload [labels](https://github.com/WongKinYiu/yolov7/releases/download/v0.1/coco2017labels-segments.zip) 
 
-Using pycoco library to filter only need classes, here I use `val2017.txt` to filter and get the needed images. Scripts to create image is [scripts](tools/eda.ipynb) in `tools` folder:
+Using pycoco library to filter only need classes, here I use `val2017.txt` to filter and get the needed images. Scripts to create image is [scripts](tools/eda.ipynb) in `tools` folder, tutorial can found in this [link](https://towardsdatascience.com/master-the-coco-dataset-for-semantic-image-segmentation-part-1-of-2-732712631047):
 
 ```
 filterClasses = ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light','fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',]
