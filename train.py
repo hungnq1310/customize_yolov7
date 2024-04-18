@@ -18,7 +18,7 @@ import torch.utils.data
 import yaml
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 
 import test  # import test.py to get mAP after each epoch
@@ -75,11 +75,17 @@ def train(hyp, opt, device, tb_writer=None):
         if wandb_logger.wandb:
             weights, epochs, hyp = opt.weights, opt.epochs, opt.hyp  # WandbLogger might update weights, epochs if resuming
 
-    # nc = 1 if opt.single_cls else data_dict['nc'])  # number of classes
-    nc_heads = data_dict['nc_heads']  # number of classes
-    # names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
-    names = data_dict['names']  # class names
-    assert len(names) == len(nc_heads), '%g names found for nc_heads=%g dataset in %s' % (len(names), nc_heads, opt.data)  # check
+    #########
+    # custom
+    #########
+
+    # number of classes for weight and bias initialization
+    nc = 1 if opt.single_cls else data_dict['nc']
+    num_heads = data_dict['num_heads']  # number of heads
+    # class names
+    names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  
+    names_per_head = data_dict['names_per_head']  # class names per head
+    assert len(names) == nc, '%g names found for nc_heads=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
     pretrained = weights.endswith('.pt')
@@ -87,18 +93,20 @@ def train(hyp, opt, device, tb_writer=None):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, num_heads=num_heads, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
-        model = Model(opt.cfg, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg, ch=3, nc=nc, num_heads=num_heads, anchors=hyp.get('anchors')).to(device)  # create
+
+    # Dataset
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
-    test_path = data_dict['test']
+    val_path = data_dict['val']
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # parameter names to freeze (full or partial)
@@ -256,7 +264,7 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Process 0
     if rank in [-1, 0]:
-        testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
+        testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '))[0]
