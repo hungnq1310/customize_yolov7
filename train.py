@@ -314,8 +314,26 @@ def train(hyp, opt, device, tb_writer=None):
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
-    compute_loss_ota = ComputeLossOTA(model)  # init loss class
-    compute_loss = ComputeLoss(model)  # init loss class
+
+    # CUSTOM: computeLossOTA for each head, get head module and model.hyperparameters 
+    compute_loss_ota_head_1 = ComputeLossOTA(
+        model.module.model[-1] if is_parallel(model) else model.model[-1], 
+        model.hyp, model.gr
+    )  # init loss class
+    compute_loss_ota_head_2 = ComputeLossOTA(
+        model.module.model[-2] if is_parallel(model) else model.model[-2], 
+        model.hyp, model.gr
+    )  # init loss class
+
+    compute_loss_head_1 = ComputeLoss(
+        model.module.model[-2] if is_parallel(model) else model.model[-1], 
+        model.hyp, model.gr
+    )  # init loss class
+    compute_loss_head_2 = ComputeLoss(
+        model.module.model[-2] if is_parallel(model) else model.model[-2], 
+        model.hyp, model.gr
+    )
+
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -350,6 +368,7 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        ### CUSTOM: targets is dict now for 2 heads
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
@@ -377,9 +396,16 @@ def train(hyp, opt, device, tb_writer=None):
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
+                    ### CUSTOM: compute loss for 2 head
+                    loss_1, loss_items_1 = compute_loss_ota_head_1(pred, targets.to(device), imgs)  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_ota_head_2(pred, targets.to(device), imgs) # head 2
+                    loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
                 else:
-                    loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    # loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    loss_1, loss_items_1 = compute_loss_head_1(pred, targets.to(device))  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_head_2(pred, targets.to(device)) # head 2
+                    loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
+
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:

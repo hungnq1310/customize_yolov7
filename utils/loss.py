@@ -421,10 +421,10 @@ class APLoss(torch.autograd.Function):
 
 class ComputeLoss:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    def __init__(self, head_module, hyper_params, gr, autobalance=False):
         super(ComputeLoss, self).__init__()
-        device = next(model.parameters()).device  # get model device
-        h = model.hyp  # hyperparameters
+        device = head_module.device  # get model device
+        h = hyper_params  # hyperparameters
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
@@ -438,13 +438,15 @@ class ComputeLoss:
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
-        # TODO: module[-1] -> currently not conflict but need to be fixed
-        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+        # CUSTOM: get head module
+        det = head_module # Detect() module
+        # det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
         #self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.1, .05])  # P3-P7
         #self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.5, 0.4, .1])  # P3-P7
         self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, gr, h, autobalance
         for k in 'na', 'nc', 'nl', 'anchors':
             setattr(self, k, getattr(det, k))
 
@@ -556,10 +558,11 @@ class ComputeLoss:
 
 class ComputeLossOTA:
     # Compute losses
-    def __init__(self, model, autobalance=False):
+    ### CUSTOM: recieve module (head)
+    def __init__(self, head_module, hyper_params, gr, autobalance=False):
         super(ComputeLossOTA, self).__init__()
-        device = next(model.parameters()).device  # get model device
-        h = model.hyp  # hyperparameters
+        device = head_module.device  # get model device
+        h = hyper_params  # hyperparameters
 
         # Define criteria
         BCEcls = nn.BCEWithLogitsLoss(pos_weight=torch.tensor([h['cls_pw']], device=device))
@@ -573,10 +576,11 @@ class ComputeLossOTA:
         if g > 0:
             BCEcls, BCEobj = FocalLoss(BCEcls, g), FocalLoss(BCEobj, g)
 
-        det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+        # det = model.module.model[-1] if is_parallel(model) else model.model[-1]  # Detect() module
+        det = head_module  # Detect() module
         self.balance = {3: [4.0, 1.0, 0.4]}.get(det.nl, [4.0, 1.0, 0.25, 0.06, .02])  # P3-P7
         self.ssi = list(det.stride).index(16) if autobalance else 0  # stride 16 index
-        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, model.gr, h, autobalance
+        self.BCEcls, self.BCEobj, self.gr, self.hyp, self.autobalance = BCEcls, BCEobj, gr, h, autobalance
         for k in 'na', 'nc', 'nl', 'anchors', 'stride':
             setattr(self, k, getattr(det, k))
 
