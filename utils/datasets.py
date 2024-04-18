@@ -503,6 +503,7 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
                 else:
                     nm += 1  # label missing
                     l = np.zeros((0, 5), dtype=np.float32)
+                # final: {'image_path': array[labels], 'shape': [x, y], 'segment': len(label) > 8 }
                 x[im_file] = [l, shape, segments]
             except Exception as e:
                 nc += 1
