@@ -642,7 +642,7 @@ class ComputeLossOTA:
 
     def build_targets(self, p, targets, imgs):
 
-        targets = targets.view((-1, 6))  # to shape [n, 6]
+        # targets = targets.view((-1, 6))  # to shape [n, 6]
         #indices, anch = self.find_positive(p, targets)
         indices, anch = self.find_3_positive(p, targets)
         #indices, anch = self.find_4_positive(p, targets)
