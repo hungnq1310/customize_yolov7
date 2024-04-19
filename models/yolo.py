@@ -629,7 +629,7 @@ class IBin(nn.Module):
 
 class Model(nn.Module):
     # TODO: change nc
-    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc_heads = [], anchors=None):  # model, input channels, number of classes
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=80, num_heads=1, anchors=None):  # model, input channels, number of classes
         super(Model, self).__init__()
         self.traced = False
         if isinstance(cfg, dict):
@@ -642,11 +642,10 @@ class Model(nn.Module):
 
         # Define model
         ch = self.yaml['ch'] = self.yaml.get('ch', ch)  # input channels
+        if nc and nc != self.yaml['nc']:
+            logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc={nc}")
+            self.yaml['nc'] = nc  # override yaml value
 
-        for idx, e_nc in enumerate(nc_heads):
-            if e_nc != self.yaml['nc_heads'][idx]:
-                logger.info(f"Overriding model.yaml nc_head_{idx}={self.yaml['nc_heads'][idx]} with nc_head_{idx}={e_nc}")
-                self.yaml['nc_heads'][idx] = e_nc
         # if nc_head1 and nc_head1 != self.yaml['nc_head1']:
         #     logger.info(f"Overriding model.yaml nc={self.yaml['nc']} with nc_head1={nc_head1}")
         #     self.yaml['nc_head1'] = nc_head1  # override yaml value
@@ -658,12 +657,13 @@ class Model(nn.Module):
             self.yaml['anchors'] = round(anchors)  # override yaml value
         self.model, self.save = parse_model(deepcopy(self.yaml), ch=[ch])  # model, savelist
 
-        # self.names = [str(i) for i in range(self.yaml['nc'])]  # default names
-        self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
+        self.names = [str(i) for i in range(self.yaml['nc'])]  # set index for class names
+        # self.names_heads = [str(i) for i in range(self.yaml['nc_heads'][0])] * len(self.yaml['nc_heads']) # default names of class for each head
         # print([x.shape for x in self.forward(torch.zeros(1, ch, 64, 64))])
 
         # Build strides, anchors for head
-        for m in self.model:
+        heads = self.model[-num_heads:]
+        for m in heads:
             # if isinstance(m, Detect) or isinstance(m, Segment):
             #     s = 256  # 2x min stride
             #     m.stride = torch.tensor([s / x.shape[-2] for x in self.forward(torch.zeros(1, ch, s, s))])  # forward
@@ -787,7 +787,7 @@ class Model(nn.Module):
         # cf = torch.bincount(torch.tensor(np.concatenate(dataset.labels, 0)[:, 0]).long(), minlength=nc) + 1.
         for mi, s in zip(m.m, m.stride):  # from
             b = mi.bias.view(m.na, -1)  # conv.bias(255) to (3,85)
-            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image)
+            b.data[:, 4] += math.log(8 / (640 / s) ** 2)  # obj (8 objects per 640 image size)
             b.data[:, 5:] += math.log(0.6 / (m.nc - 0.99)) if cf is None else torch.log(cf / cf.sum())  # cls
             mi.bias = torch.nn.Parameter(b.view(-1), requires_grad=True)
 
@@ -886,9 +886,9 @@ class Model(nn.Module):
 
 def parse_model(d, ch):  # model_dict, input_channels(3)
     logger.info('\n%3s%18s%3s%10s  %-40s%-30s' % ('', 'from', 'n', 'params', 'module', 'arguments'))
-    anchors, nc_heads, gd, gw = d['anchors'], d['nc_heads'], d['depth_multiple'], d['width_multiple']
+    anchors, nc, gd, gw = d['anchors'], d['nc'], d['depth_multiple'], d['width_multiple']
     na = (len(anchors[0]) // 2) if isinstance(anchors, list) else anchors  # number of anchors
-    no = na * (nc_heads[0] + 5)  # number of outputs = anchors * (classes + 5)
+    no = na * (nc + 5)  # number of outputs = anchors * (classes + 5)
     # Error case -> first head may be not detect head, should be handled in the future
 
     layers, save, c2 = [], [], ch[-1]  # layers, savelist, ch out
@@ -929,10 +929,6 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
                      ST2CSPA, ST2CSPB, ST2CSPC]:
                 args.insert(2, n)  # number of repeats
                 n = 1
-        elif m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
-            args.append([ch[x] for x in f])
-            if isinstance(args[1], int):  # number of anchors
-                args[1] = [list(range(args[1] * 2))] * len(f)
         elif m is nn.BatchNorm2d:
             args = [ch[f]]
         elif m is Concat:
@@ -943,6 +939,10 @@ def parse_model(d, ch):  # model_dict, input_channels(3)
             c2 = ch[f[0]]
         elif m is Foldcut:
             c2 = ch[f] // 2
+        elif m in (Detect, IDetect, IAuxDetect, IBin, IKeypoint):
+            args.append([ch[x] for x in f])
+            if isinstance(args[1], int):  # number of anchors
+                args[1] = [list(range(args[1] * 2))] * len(f)
         elif m is ReOrg:
             c2 = ch[f] * 4
         elif m is Contract:

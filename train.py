@@ -18,7 +18,7 @@ import torch.utils.data
 import yaml
 from torch.cuda import amp
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard.writer import SummaryWriter
 from tqdm import tqdm
 
 import test  # import test.py to get mAP after each epoch
@@ -75,11 +75,17 @@ def train(hyp, opt, device, tb_writer=None):
         if wandb_logger.wandb:
             weights, epochs, hyp = opt.weights, opt.epochs, opt.hyp  # WandbLogger might update weights, epochs if resuming
 
-    # nc = 1 if opt.single_cls else data_dict['nc'])  # number of classes
-    nc_heads = data_dict['nc_heads']  # number of classes
-    # names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  # class names
-    names = data_dict['names']  # class names
-    assert len(names) == len(nc_heads), '%g names found for nc_heads=%g dataset in %s' % (len(names), nc_heads, opt.data)  # check
+    #########
+    # custom
+    #########
+
+    # number of classes for weight and bias initialization
+    nc = 1 if opt.single_cls else data_dict['nc']
+    num_heads = data_dict['num_heads']  # number of heads
+    # class names
+    names = ['item'] if opt.single_cls and len(data_dict['names']) != 1 else data_dict['names']  
+    names_per_head = data_dict['names_per_head']  # class names per head
+    assert len(names) == nc, '%g names found for nc=%g dataset in %s' % (len(names), nc, opt.data)  # check
 
     # Model
     pretrained = weights.endswith('.pt')
@@ -87,18 +93,20 @@ def train(hyp, opt, device, tb_writer=None):
         with torch_distributed_zero_first(rank):
             attempt_download(weights)  # download if not found locally
         ckpt = torch.load(weights, map_location=device)  # load checkpoint
-        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg or ckpt['model'].yaml, ch=3, nc=nc, num_heads=num_heads, anchors=hyp.get('anchors')).to(device)  # create
         exclude = ['anchor'] if (opt.cfg or hyp.get('anchors')) and not opt.resume else []  # exclude keys
         state_dict = ckpt['model'].float().state_dict()  # to FP32
         state_dict = intersect_dicts(state_dict, model.state_dict(), exclude=exclude)  # intersect
         model.load_state_dict(state_dict, strict=False)  # load
         logger.info('Transferred %g/%g items from %s' % (len(state_dict), len(model.state_dict()), weights))  # report
     else:
-        model = Model(opt.cfg, ch=3, nc_heads=nc_heads, anchors=hyp.get('anchors')).to(device)  # create
+        model = Model(opt.cfg, ch=3, nc=nc, num_heads=num_heads, anchors=hyp.get('anchors')).to(device)  # create
+
+    # Dataset
     with torch_distributed_zero_first(rank):
         check_dataset(data_dict)  # check
     train_path = data_dict['train']
-    test_path = data_dict['test']
+    val_path = data_dict['val']
 
     # Freeze
     freeze = [f'model.{x}.' for x in (freeze if len(freeze) > 1 else range(freeze[0]))]  # parameter names to freeze (full or partial)
@@ -256,7 +264,7 @@ def train(hyp, opt, device, tb_writer=None):
 
     # Process 0
     if rank in [-1, 0]:
-        testloader = create_dataloader(test_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
+        testloader = create_dataloader(val_path, imgsz_test, batch_size * 2, gs, opt,  # testloader
                                        hyp=hyp, cache=opt.cache_images and not opt.notest, rect=True, rank=-1,
                                        world_size=opt.world_size, workers=opt.workers,
                                        pad=0.5, prefix=colorstr('val: '))[0]
@@ -285,16 +293,18 @@ def train(hyp, opt, device, tb_writer=None):
     # Model parameters
     hyp['box'] *= 3. / nl  # scale to layers
     #TODO:
-    # hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers #
-    hyp['cls'] *= sum(nc_heads) / 80. * 3. / nl  # scale to classes and layers #
+    hyp['cls'] *= nc / 80. * 3. / nl  # scale to classes and layers #
+    # hyp['cls'] *= sum(nc_heads) / 80. * 3. / nl  # scale to classes and layers #
     hyp['obj'] *= (imgsz / 640) ** 2 * 3. / nl  # scale to image size and layers
     hyp['label_smoothing'] = opt.label_smoothing
     # model.nc = sum(nc_heads)  # attach number of classes to model # TODO
     model.hyp = hyp  # attach hyperparameters to model
     model.gr = 1.0  # iou loss ratio (obj_loss = 1.0 or iou)
-    model.class_weights = labels_to_class_weights(dataset.labels, sum(nc_heads)).to(device) * sum(nc_heads)  # attach class weights
+    #NOTE: is affected or not?
+    # model.class_weights = labels_to_class_weights(dataset.labels, sum(nc_heads)).to(device) * sum(nc_heads)  # attach class weights
+    model.class_weights = labels_to_class_weights(dataset.labels, nc).to(device) * nc  # attach class weights
     model.names = names
-    nc = sum(nc_heads)  # number of classes
+    # nc = sum(nc_heads)  # number of classes
 
     # Start training
     t0 = time.time()
@@ -304,8 +314,26 @@ def train(hyp, opt, device, tb_writer=None):
     results = (0, 0, 0, 0, 0, 0, 0)  # P, R, mAP@.5, mAP@.5-.95, val_loss(box, obj, cls)
     scheduler.last_epoch = start_epoch - 1  # do not move
     scaler = amp.GradScaler(enabled=cuda)
-    compute_loss_ota = ComputeLossOTA(model)  # init loss class
-    compute_loss = ComputeLoss(model)  # init loss class
+
+    # CUSTOM: computeLossOTA for each head, get head module and model.hyperparameters 
+    compute_loss_ota_head_1 = ComputeLossOTA(
+        model.module.model[-1] if is_parallel(model) else model.model[-1], 
+        model.hyp, model.gr, device
+    )  # init loss class
+    compute_loss_ota_head_2 = ComputeLossOTA(
+        model.module.model[-2] if is_parallel(model) else model.model[-2], 
+        model.hyp, model.gr, device
+    )  # init loss class
+
+    compute_loss_head_1 = ComputeLoss(
+        model.module.model[-2] if is_parallel(model) else model.model[-1], 
+        model.hyp, model.gr, device
+    )  # init loss class
+    compute_loss_head_2 = ComputeLoss(
+        model.module.model[-2] if is_parallel(model) else model.model[-2], 
+        model.hyp, model.gr, device
+    )
+
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
                 f'Using {dataloader.num_workers} dataloader workers\n'
                 f'Logging results to {save_dir}\n'
@@ -340,6 +368,7 @@ def train(hyp, opt, device, tb_writer=None):
         if rank in [-1, 0]:
             pbar = tqdm(pbar, total=nb)  # progress bar
         optimizer.zero_grad()
+        ### CUSTOM: targets is dict now for 2 heads
         for i, (imgs, targets, paths, _) in pbar:  # batch -------------------------------------------------------------
             ni = i + nb * epoch  # number integrated batches (since train start)
             imgs = imgs.to(device, non_blocking=True).float() / 255.0  # uint8 to float32, 0-255 to 0.0-1.0
@@ -367,9 +396,16 @@ def train(hyp, opt, device, tb_writer=None):
             with amp.autocast(enabled=cuda):
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
-                    loss, loss_items = compute_loss_ota(pred, targets.to(device), imgs)  # loss scaled by batch_size
+                    ### CUSTOM: compute loss for 2 head
+                    loss_1, loss_items_1 = compute_loss_ota_head_1(pred, targets['head_1'].to(device), imgs)  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_ota_head_2(pred, targets['head_2'].to(device), imgs) # head 2
+                    loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
                 else:
-                    loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    # loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
+                    loss_1, loss_items_1 = compute_loss_head_1(pred, targets['head_1'].to(device))  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_head_2(pred, targets['head_2'].to(device)) # head 2
+                    loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
+
                 if rank != -1:
                     loss *= opt.world_size  # gradient averaged between devices in DDP mode
                 if opt.quad:
@@ -391,13 +427,14 @@ def train(hyp, opt, device, tb_writer=None):
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets['head_1'].shape[0], imgs.shape[-1])
                 pbar.set_description(s)
 
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets['head_1'], paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets['head_2'], paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph
@@ -429,7 +466,7 @@ def train(hyp, opt, device, tb_writer=None):
                                                  verbose=nc < 50 and final_epoch,
                                                  plots=plots and final_epoch,
                                                  wandb_logger=wandb_logger,
-                                                 compute_loss=compute_loss,
+                                                 compute_loss=[compute_loss_head_1, compute_loss_head_2],
                                                  is_coco=is_coco,
                                                  v5_metric=opt.v5_metric)
 

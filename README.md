@@ -341,26 +341,32 @@ YOLOv7-3d-detection & YOLOv7-lidar & YOLOv7-road (with NTUT)
 
 ### Extend collate_fn
 - That's why collator of datasets will change size's `labels_out` to `[nL, 6]` instead of `[nL, 3]`, 3 will be the default number of anchors
-![](assess/hinh_6.png)
+![](assess/collator.png)
 
 
 ### Refactor Model
-- class Model now will not reviece `nc` value because the scale of detecion head, and `nc` now will be compute by `sum(nc_heads)`
-![](assess/image_7.png)
+- class Model now will reviece `num_heads` value because the scale of detecion head, this argument will use for getting detect module and initizling bias 
+```
+class Model(nn.Module):
+    # TODO: change nc
+    def __init__(self, cfg='yolor-csp-c.yaml', ch=3, nc=80, num_heads=1, anchors=None):
+    ...
+
+```
 
 - add argument `m` to pass to function `_initialize_biases()`, this will ensure both Detect head have initilize instead only last layer  `m = self.model[-1]`
 ![](assess/image_5.png)
 
 ### change loss function
-- The output of model return `[list of detection layer] x 2`, so I need to change `ComputeLossOTA` class.
-- because loss is counted on number anchors, I just need resize the output from `(w, h, na, 2)` to `(-1, 6)` where 6 is `na*2`
-![](assess/image_4.png)
+- The output of model return `[list of detection layer] x 2`, so I need to change aruguements of `ComputeLossOTA` class and ``ComputeLoss` as well as calling method in `train.py`, where:
+![](assess/loss_custom.png)
+![](assess/custom_loss_2.png)
 
 ### Final layer model
 ![](assess/model.png)
 
 ## Currently Status
-Model now can run succesfully, but when testing with `val2017` dataset, it's failure. Because of limitation and all in effor, there is also no exist result to view, I'm sorry for that.   
+Model now can run succesfully, but with the of limitation time, I only show result after training 1 epoch.   
 
 ```
 Transferred 552/568 items from weights/yolov7.pt
@@ -377,7 +383,38 @@ Starting training for 10 epochs...
 
      Epoch   gpu_mem       box       obj       cls     total    labels  img_size
        0/9     1.02G   0.05821   0.01681   0.01696   0.09198        10       640: 100%|███████████████████████████████████████████████████████████████████████████████████████████████████| 674/674 [06:44<00:00,  1.67it/s
+
+return _VF.meshgrid(tensors, **kwargs)  # type: ignore[attr-defined]
+    Class      Images      Labels           P           R      mAP@.5  mAP@.5:.95: 100%|██████████████████████████████████████████████████████████████████████████| 34/34 [00:35<00:00,  1.04s/it]
+        all         538        1061       0.294       0.504       0.261       0.112
+    bicycle         538        1061       0.294       0.504       0.261       0.112
+
+wandb:      metrics/mAP_0.5 0.2606
+wandb: metrics/mAP_0.5:0.95 0.11224
+wandb:    metrics/precision 0.29415
+wandb:       metrics/recall 0.50424
+wandb:       train/box_loss 0.06072
+wandb:       train/cls_loss 0.01892
+wandb:       train/obj_loss 0.02053
+wandb:         val/box_loss 0.07992
+wandb:         val/cls_loss 0.00896
+wandb:         val/obj_loss 0.0264
+wandb:                x/lr0 0.00333
+wandb:                x/lr1 0.00333
+wandb:                x/lr2 0.07006
 ```
 
+### Prediction Image
+batch 1 prediction:
+![](assess/test_batch_1_pred.jpg)
+batch 2 prediction:
+![](assess/test_batch_2_predict.jpg)
 
+### Error Analysis
+batch 1 label:
+![](assess/test_batch_1_label.jpg)
+batch 2 label:
+![](assess/test_batch_2_label.jpg)
+
+- Name annotations for these label is currently wrong
 
