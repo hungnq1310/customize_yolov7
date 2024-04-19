@@ -634,7 +634,16 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         img, label, path, shapes = zip(*batch)  # transposed
         for i, l in enumerate(label):
             l[:, 0] = i  # add target image index for build_targets()
-        return torch.stack(img, 0), torch.cat(label, 0), path, shapes
+        
+        ### Custom
+        labels = torch.cat(label, 0)
+        head_1 = labels[labels[:, 1] in range(10)]
+        head_2 = labels[labels[:, 1] in range(10, 20)]
+
+        return torch.stack(img, 0), {
+            'head_1': head_1,
+            'head_2': head_2
+        }, path, shapes
 
     @staticmethod
     def collate_fn4(batch):

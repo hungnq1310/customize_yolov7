@@ -397,13 +397,13 @@ def train(hyp, opt, device, tb_writer=None):
                 pred = model(imgs)  # forward
                 if 'loss_ota' not in hyp or hyp['loss_ota'] == 1:
                     ### CUSTOM: compute loss for 2 head
-                    loss_1, loss_items_1 = compute_loss_ota_head_1(pred, targets.to(device), imgs)  # loss scaled by batch_size
-                    loss_2, loss_items_2 = compute_loss_ota_head_2(pred, targets.to(device), imgs) # head 2
+                    loss_1, loss_items_1 = compute_loss_ota_head_1(pred, targets['head_1'].to(device), imgs)  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_ota_head_2(pred, targets['head_2'].to(device), imgs) # head 2
                     loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
                 else:
                     # loss, loss_items = compute_loss(pred, targets.to(device))  # loss scaled by batch_size
-                    loss_1, loss_items_1 = compute_loss_head_1(pred, targets.to(device))  # loss scaled by batch_size
-                    loss_2, loss_items_2 = compute_loss_head_2(pred, targets.to(device)) # head 2
+                    loss_1, loss_items_1 = compute_loss_head_1(pred, targets['head_1'].to(device))  # loss scaled by batch_size
+                    loss_2, loss_items_2 = compute_loss_head_2(pred, targets['head_2'].to(device)) # head 2
                     loss, loss_items = loss_1 + loss_2, loss_items_1 + loss_items_2
 
                 if rank != -1:
@@ -427,13 +427,14 @@ def train(hyp, opt, device, tb_writer=None):
                 mloss = (mloss * i + loss_items) / (i + 1)  # update mean losses
                 mem = '%.3gG' % (torch.cuda.memory_reserved() / 1E9 if torch.cuda.is_available() else 0)  # (GB)
                 s = ('%10s' * 2 + '%10.4g' * 6) % (
-                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets.shape[0], imgs.shape[-1])
+                    '%g/%g' % (epoch, epochs - 1), mem, *mloss, targets['head_1'].shape[0], imgs.shape[-1])
                 pbar.set_description(s)
 
                 # Plot
                 if plots and ni < 10:
                     f = save_dir / f'train_batch{ni}.jpg'  # filename
-                    Thread(target=plot_images, args=(imgs, targets, paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets['head_1'], paths, f), daemon=True).start()
+                    Thread(target=plot_images, args=(imgs, targets['head_2'], paths, f), daemon=True).start()
                     # if tb_writer:
                     #     tb_writer.add_image(f, result, dataformats='HWC', global_step=epoch)
                     #     tb_writer.add_graph(torch.jit.trace(model, imgs, strict=False), [])  # add model graph
