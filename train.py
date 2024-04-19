@@ -318,20 +318,20 @@ def train(hyp, opt, device, tb_writer=None):
     # CUSTOM: computeLossOTA for each head, get head module and model.hyperparameters 
     compute_loss_ota_head_1 = ComputeLossOTA(
         model.module.model[-1] if is_parallel(model) else model.model[-1], 
-        model.hyp, model.gr
+        model.hyp, model.gr, device
     )  # init loss class
     compute_loss_ota_head_2 = ComputeLossOTA(
         model.module.model[-2] if is_parallel(model) else model.model[-2], 
-        model.hyp, model.gr
+        model.hyp, model.gr, device
     )  # init loss class
 
     compute_loss_head_1 = ComputeLoss(
         model.module.model[-2] if is_parallel(model) else model.model[-1], 
-        model.hyp, model.gr
+        model.hyp, model.gr, device
     )  # init loss class
     compute_loss_head_2 = ComputeLoss(
         model.module.model[-2] if is_parallel(model) else model.model[-2], 
-        model.hyp, model.gr
+        model.hyp, model.gr, device
     )
 
     logger.info(f'Image sizes {imgsz} train, {imgsz_test} test\n'
