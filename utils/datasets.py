@@ -637,8 +637,17 @@ class LoadImagesAndLabels(Dataset):  # for training/testing
         
         ### Custom
         labels = torch.cat(label, 0)
-        head_1 = labels[labels[:, 1] in range(10)]
-        head_2 = labels[labels[:, 1] in range(10, 20)]
+
+        head_1 = labels[labels[:, 1] < 10]
+        head_2 = labels[(labels[:, 1] >= 10) & (labels[:, 1] < 20)]
+
+        # head_1 = torch.zeros(labels.shape)
+        # head_2 = torch.zeros(labels.shape)
+        # for idx, l in enumerate(labels):
+        #     if l[1] in range(10):
+        #         head_1[idx] = l
+        #     elif l[1] in range(10, 20):
+        #         head_2[idx] = l
 
         return torch.stack(img, 0), {
             'head_1': head_1,
