@@ -4,12 +4,12 @@
 # download: bash ./scripts/get_coco.sh
 
 # train and val data as 1) directory: path/images/, 2) file: path/images.txt, or 3) list: [path1/images/, path2/images/]
-train: ./coco/custom/train_custom.txt  # 118287 images
-test: ./coco/val2017.txt  # 5000 images
+train: ./coco/custom/train.txt  # 118287 images
+val: ./coco/custom/val.txt  # 5000 images
 
 # number of classes
-# nc: 80
-nc_heads: [10, 10]
+nc: 20
+num_heads: 2
 
 # class names
 # names: [ 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
@@ -22,8 +22,12 @@ nc_heads: [10, 10]
 #          'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'book', 'clock', 'vase', 'scissors', 'teddy bear',
 #          'hair drier', 'toothbrush' ]
 
-# class names
-names: [ 
+names: [ 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light',
+         'fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow', 
+        ]
+
+# class names #TODO: set name to index
+names_per_head: [ 
   ['person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus', 'train', 'truck', 'boat', 'traffic light'],
   ['fire hydrant', 'stop sign', 'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow'],
 ]
